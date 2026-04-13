@@ -12,13 +12,134 @@ const BASELINE = {
   globalEmissions: 37.4,
 };
 
+// ─── Dynamic context generator ───────────────────────────────────────────────
+// Takes the decision index + full history and returns a context paragraph that
+// references what the player actually chose before.
+function buildContext(decisionIndex, history, climate) {
+  const base = [
+    // Decision 1 — no history yet, always static
+    () => `It is 2026. Global CO₂ concentration has reached 428 ppm — higher than at any point in the last 3 million years. The energy sector accounts for 73% of all greenhouse gas emissions. As a newly appointed UN Climate Coordinator, your first briefing lands on your desk.`,
+
+    // Decision 2 — references energy choice
+    () => {
+      const e = history[0];
+      if (!e) return `A decade has passed. Deforestation continues at 10 million hectares per year. Land use change accounts for 11% of global emissions. The Amazon's eastern sectors have crossed a regional tipping point.`;
+      const outcomes = {
+        aggressive_renewables: `A decade has passed. The renewable mandate you championed has reshaped power grids across 40 nations — but the transition has been turbulent. Grid instability, political backlash, and supply chain bottlenecks slowed deployment. CO₂ now sits at ${climate.co2.toFixed(0)} ppm. The energy sector is changing. But land is burning.`,
+        gas_bridge: `A decade has passed. The gas bridge you endorsed kept the lights on and the politics manageable — but atmospheric methane has spiked, and the infrastructure lock-in is becoming visible. CO₂ sits at ${climate.co2.toFixed(0)} ppm, higher than hoped. The fossil fuel lobby is emboldened. And the forests are still falling.`,
+        nuclear_expansion: `A decade has passed. The nuclear renaissance you championed is underway in 12 nations, but construction timelines have slipped and public opposition has stalled projects in 6 others. CO₂ sits at ${climate.co2.toFixed(0)} ppm. The grid is cleaner where it worked. But land use emissions have gone largely unaddressed.`,
+        status_quo: `A decade has passed. Markets moved slowly. Voluntary pledges underdelivered by 28%. CO₂ now sits at ${climate.co2.toFixed(0)} ppm — tracking above the worst-case scenario from your first briefing. The energy sector is your legacy so far. Now the forests demand your attention.`,
+      };
+      return outcomes[e.choiceId] || outcomes.status_quo;
+    },
+
+    // Decision 3 — references energy + land choices
+    () => {
+      const e = history[0];
+      const l = history[1];
+      const tempStr = `+${climate.tempAnomaly.toFixed(2)}°C above pre-industrial`;
+      let opening = `Two decades in. The world is ${tempStr}. `;
+      if (l?.choiceId === "halt_deforestation") opening += `The zero-deforestation treaty you forged is holding — forest loss dropped 60% in signatory nations. But a new threat has emerged from below: `;
+      else if (l?.choiceId === "reforestation") opening += `The trillion-tree program has planted 180 billion trees, though scientists warn half are in the wrong climate zones. Meanwhile: `;
+      else if (l?.choiceId === "regen_agriculture") opening += `Regenerative agriculture is spreading, quietly rebuilding soil carbon across three continents. But the atmosphere doesn't wait for quiet progress: `;
+      else opening += `Forests continued to fall while other priorities dominated. Now a compounding threat arrives: `;
+      return opening + `methane concentrations have reached 1,950 ppb — more than double pre-industrial levels. Satellite data reveals massive unreported leaks from oil & gas infrastructure and thawing permafrost across Siberia and Alaska.`;
+    },
+
+    // Decision 4 — references all three prior choices
+    () => {
+      const e = history[0];
+      const l = history[1];
+      const m = history[2];
+      const tempStr = `+${climate.tempAnomaly.toFixed(2)}°C`;
+      let para = `Three decades of decisions. The world is now ${tempStr} above pre-industrial levels. `;
+      if (climate.seaLevel > 15) para += `Sea levels have risen ${climate.seaLevel.toFixed(0)} cm — coastal flooding that was once a 1-in-50-year event now comes annually to Miami, Jakarta, and Dhaka. `;
+      else para += `Sea level rise of ${climate.seaLevel.toFixed(0)} cm has been felt at the margins — low-lying islands, delta cities, storm-surge zones. `;
+      if (m?.choiceId === "co2_only") para += `The methane crisis you deferred has compounded the warming trajectory significantly. `;
+      else if (m?.choiceId === "fossil_methane") para += `The methane capture mandate you enforced bought measurable time — near-term warming is slower than models feared. `;
+      if (e?.choiceId === "status_quo" && l?.choiceId === "beccs") para += `Early decisions that prioritized economic stability over aggressive action are now visible in the data. `;
+      para += `The question is no longer only mitigation. It is survival.`;
+      return para;
+    },
+
+    // Decision 5 — references all four prior choices, stakes maximized
+    () => {
+      const e = history[0];
+      const m = history[2];
+      const a = history[3];
+      const tempStr = `+${climate.tempAnomaly.toFixed(2)}°C`;
+      let para = `It is 2066. Four decades of choices have brought the world to ${tempStr}. `;
+      if (a?.choiceId === "sai") para += `The stratospheric aerosol program you authorized has masked warming — but CO₂ keeps accumulating, and the termination risk grows with every year of dependency. `;
+      else if (a?.choiceId === "managed_retreat") para += `The managed retreat program you funded has relocated 40 million people — painful, but those communities survived. Others did not. `;
+      else if (a?.choiceId === "climate_finance") para += `The climate finance you delivered has built resilience in the Global South — but adaptation has limits. Mitigation still determines the final temperature. `;
+      if (e?.choiceId === "aggressive_renewables" && m?.choiceId === "fossil_methane") para += `Your early aggressive action on energy and methane is the reason this window still exists. `;
+      else if (e?.choiceId === "status_quo") para += `The early years of market-led inaction left a carbon debt that every subsequent coordinator has been paying down. `;
+      para += `Scientists confirm this is humanity's final clear window before irreversible tipping points — West Antarctic Ice Sheet destabilization, full Amazon dieback, Atlantic circulation collapse — become locked in. History will be defined by what happens next.`;
+      return para;
+    },
+  ];
+
+  return base[decisionIndex] ? base[decisionIndex]() : "";
+}
+
+// ─── Choice unlock system ─────────────────────────────────────────────────────
+// Returns extra choices unlocked by prior decisions, keyed by decision id
+function getUnlockedChoices(decisionId, history) {
+  const choiceIds = history.map(h => h.choiceId);
+
+  if (decisionId === "land_use" && choiceIds.includes("aggressive_renewables")) {
+    return [{
+      id: "green_finance_forests",
+      label: "⚡ Leverage renewable energy revenues to fund forest bonds",
+      detail: "Use revenues from your renewable energy agreements to back $500B in sovereign forest protection bonds — tying clean energy success directly to land use.",
+      science: "This approach mirrors Costa Rica's PES (Payments for Ecosystem Services) program, which reduced deforestation 75% over 20 years by making forests economically competitive with cleared land. Scaling this via energy revenues is a documented policy pathway (Nature Finance, 2023).",
+      unlocked: true,
+      effects: { co2Delta: -5.5, tempDelta: -0.08, seaDelta: -0.4, iceDelta: 0.06, bioDelta: 10, emisDelta: -5.0 }
+    }];
+  }
+
+  if (decisionId === "methane" && choiceIds.includes("halt_deforestation")) {
+    return [{
+      id: "forest_methane_combined",
+      label: "🌿 Combine forest protection with methane monitoring network",
+      detail: "Build on your deforestation treaty infrastructure to deploy a global methane monitoring network — using forest rangers and indigenous communities as ground-truth sensors alongside satellites.",
+      science: "Indigenous-managed territories have 50% lower deforestation rates and are now being studied as methane monitoring anchors. Combined land-atmosphere monitoring reduces measurement uncertainty by ~40% (Nature Climate Change, 2022).",
+      unlocked: true,
+      effects: { co2Delta: -3.5, tempDelta: -0.09, seaDelta: -0.25, iceDelta: 0.1, bioDelta: 4, emisDelta: -4.5 }
+    }];
+  }
+
+  if (decisionId === "adaptation" && choiceIds.includes("fossil_methane") && choiceIds.includes("aggressive_renewables")) {
+    return [{
+      id: "clean_energy_adaptation",
+      label: "⚡🌊 Deploy clean energy microgrids as climate adaptation infrastructure",
+      detail: "Your early energy and methane wins created political capital and technology. Now deploy resilient clean energy microgrids in the world's most climate-vulnerable communities — combining adaptation with continued decarbonization.",
+      science: "Resilient microgrids in vulnerable regions serve dual purposes: cutting emissions and providing disaster-proof power during climate events. Post-Hurricane Maria, Puerto Rico's microgrid communities recovered 3x faster (Rocky Mountain Institute, 2022).",
+      unlocked: true,
+      effects: { co2Delta: -2.0, tempDelta: -0.04, seaDelta: -0.2, iceDelta: 0.05, bioDelta: 3, emisDelta: -3.0 }
+    }];
+  }
+
+  if (decisionId === "final_push" && choiceIds.includes("binding_treaty") === false && choiceIds.includes("status_quo")) {
+    return [{
+      id: "emergency_protocol",
+      label: "🚨 Invoke UN Climate Emergency Protocol",
+      detail: "After decades of inadequate voluntary action, invoke an emergency UN framework that bypasses normal treaty ratification — a last-resort legal mechanism that has never been used.",
+      science: "International law scholars have outlined pathways for emergency climate governance under existing UN Charter provisions. The legal basis is contested but the scientific necessity — given remaining carbon budgets — is not (Columbia Law School Climate Change Initiative, 2023).",
+      unlocked: true,
+      effects: { co2Delta: -10, tempDelta: -0.11, seaDelta: -0.55, iceDelta: 0.2, bioDelta: 5, emisDelta: -7.0 }
+    }];
+  }
+
+  return [];
+}
+
 const DECISIONS = [
   {
     id: "energy_transition",
     decade: 1,
     range: "2026–2036",
     title: "The Energy Crossroads",
-    context: "It is 2026. Global CO₂ concentration has reached 427 ppm — higher than at any point in the last 3 million years. The energy sector accounts for 73% of all greenhouse gas emissions. As a newly appointed UN Climate Coordinator, your first briefing lands on your desk.",
     question: "How do you prioritize the global energy transition?",
     choices: [
       {
@@ -56,7 +177,6 @@ const DECISIONS = [
     decade: 2,
     range: "2036–2046",
     title: "The Forest Covenant",
-    context: "A decade has passed. Deforestation continues at 10 million hectares per year — an area the size of Iceland, annually. Land use change accounts for 11% of global emissions. Satellite data confirms the Amazon's eastern sectors have crossed a regional tipping point, shifting from carbon sink to carbon source in drought years.",
     question: "How do you address global land use and forest protection?",
     choices: [
       {
@@ -94,21 +214,20 @@ const DECISIONS = [
     decade: 3,
     range: "2046–2056",
     title: "The Invisible Threat",
-    context: "Methane concentrations have risen to 1,950 ppb — more than double pre-industrial levels. Atmospheric methane is 80x more potent than CO₂ over 20 years. Satellite data reveals massive unreported leaks from oil & gas infrastructure, landfills, and thawing permafrost across Siberia and Alaska.",
     question: "How do you tackle the methane crisis?",
     choices: [
       {
         id: "fossil_methane",
         label: "Mandate fossil fuel methane capture",
         detail: "Require 75% reduction in oil & gas methane leaks within 5 years. Technology exists; enforcement is the problem.",
-        science: "Oil & gas methane emissions could be cut 75% with existing technology, often at zero net cost due to captured gas value (IEA, 2023). The IEA notes this would have a greater near-term climate impact than immediately taking all cars and trucks in the world off the road (IEA, 2023).",
+        science: "Oil & gas methane emissions could be cut 75% with existing technology, often at zero net cost due to captured gas value (IEA, 2023). The IEA notes this would have a greater near-term climate impact than immediately taking all cars and trucks in the world off the road.",
         effects: { co2Delta: -2.5, tempDelta: -0.07, seaDelta: -0.2, iceDelta: 0.08, bioDelta: 2, emisDelta: -3.5 }
       },
       {
         id: "ag_methane",
         label: "Transform livestock and rice agriculture",
         detail: "Fund low-methane feed additives, wetland rice management reform, and dietary shift incentives globally.",
-        science: "Livestock accounts for 14.5% of global GHG emissions (FAO, 2013). Seaweed feed additives (Asparagopsis) can reduce cattle enteric methane by up to 80% in controlled trials. Broad adoption is the challenge.",
+        science: "Livestock accounts for 14.5% of global GHG emissions (FAO). Seaweed feed additives (Asparagopsis) can reduce cattle enteric methane by up to 80% in controlled trials. Broad adoption is the challenge.",
         effects: { co2Delta: -1.5, tempDelta: -0.04, seaDelta: -0.15, iceDelta: 0.04, bioDelta: 1, emisDelta: -2.0 }
       },
       {
@@ -132,7 +251,6 @@ const DECISIONS = [
     decade: 4,
     range: "2056–2066",
     title: "When the Waters Rise",
-    context: "Sea levels have risen measurably. Miami, Jakarta, and Bangladesh's coastal cities now experience annual flooding that was once considered a 1-in-50-year event. The World Bank estimates 216 million people face internal climate displacement by 2050 under current trajectories. The question is no longer only mitigation — it is survival.",
     question: "How do you lead global climate adaptation?",
     choices: [
       {
@@ -160,7 +278,7 @@ const DECISIONS = [
         id: "sai",
         label: "Authorize stratospheric aerosol injection",
         detail: "Deploy solar geoengineering — injecting reflective sulfate particles into the stratosphere — to buy time while emissions are reduced.",
-        science: "SAI could reduce global mean temperatures by 1–2°C relatively rapidly. But termination shock — stopping suddenly — could cause catastrophic rebound warming. SAI also alters monsoon patterns, threatening food security for 2+ billion people in South Asia and sub-Saharan Africa. No international governance framework exists.",
+        science: "SAI could reduce global mean temperatures by 1–2°C relatively rapidly. But termination shock — stopping suddenly — could cause catastrophic rebound warming. SAI also alters monsoon patterns, threatening food security for 2+ billion people. No international governance framework exists.",
         effects: { co2Delta: 0, tempDelta: -0.12, seaDelta: -0.4, iceDelta: 0.15, bioDelta: -5, emisDelta: 0 }
       }
     ]
@@ -170,35 +288,34 @@ const DECISIONS = [
     decade: 5,
     range: "2066–2076",
     title: "The Last Window",
-    context: "It is 2066. The choices made over four decades have shaped a world transformed. Scientists confirm this is humanity's final clear window to determine whether global civilization stabilizes or crosses a cascade of irreversible tipping points — West Antarctic Ice Sheet destabilization, full Amazon dieback, and Atlantic Meridional Overturning Circulation collapse. History will be defined by what happens next.",
     question: "What is your final legacy decision?",
     choices: [
       {
         id: "dac",
         label: "Deploy direct air carbon capture at scale",
         detail: "Mobilize a global Manhattan Project for mechanical direct air capture — actively removing CO₂ already accumulated in the atmosphere.",
-        science: "Current DAC costs ~$300–1,000/ton CO₂ (2024). Climeworks' Mammoth facility captures 36,000 tons/year. We need gigatons. Massive cost reduction is achievable but demands unprecedented industrial mobilization and clean energy to power it.",
+        science: "Current DAC costs ~$300–1,000/ton CO₂ (2024). Climeworks' Mammoth facility captures 36,000 tons/year at nameplate capacity. We need gigatons. Massive cost reduction is achievable but demands unprecedented industrial mobilization.",
         effects: { co2Delta: -12, tempDelta: -0.10, seaDelta: -0.6, iceDelta: 0.2, bioDelta: 3, emisDelta: -5.0 }
       },
       {
         id: "degrowth",
         label: "Champion post-growth economic models",
         detail: "Lead a global transition away from GDP-growth as the primary measure of prosperity toward wellbeing economics and radical efficiency.",
-        science: "High-income nations could cut emissions 40–70% through demand-side measures alone — dietary shifts, reduced aviation, smaller homes — with minimal wellbeing loss (IPCC AR6, Chapter 5). Degrowth remains politically radical but physically necessary.",
+        science: "High-income nations could cut emissions 40–70% through demand-side measures alone — dietary shifts, reduced aviation, smaller homes — with minimal wellbeing loss (IPCC AR6, Chapter 5).",
         effects: { co2Delta: -7, tempDelta: -0.07, seaDelta: -0.4, iceDelta: 0.12, bioDelta: 5, emisDelta: -8.0 }
       },
       {
         id: "fusion",
         label: "Bet on breakthrough clean technology",
         detail: "Massively fund fusion energy, advanced geothermal, green hydrogen, and next-generation nuclear as the ultimate long-term solution.",
-        science: "Fusion has been '30 years away' for 70 years, but NIF achieved ignition in December 2022. Advanced geothermal (AGE) is commercially closer. High-risk, high-reward — breakthroughs cannot be scheduled, but investment increases probability.",
+        science: "Fusion has been '30 years away' for 70 years, but NIF achieved ignition in December 2022. Advanced geothermal is commercially closer. High-risk, high-reward — breakthroughs cannot be scheduled.",
         effects: { co2Delta: -4, tempDelta: -0.04, seaDelta: -0.2, iceDelta: 0.08, bioDelta: 1, emisDelta: -4.0 }
       },
       {
         id: "binding_treaty",
         label: "Forge a binding global climate constitution",
         detail: "Use your platform to establish a legally binding, enforcement-backed international climate framework that cannot be walked away from.",
-        science: "The 1987 Montreal Protocol — a binding treaty — successfully reduced ozone-depleting substances by 99% and remains the only international environmental treaty considered fully successful. The Paris Agreement is voluntary; compliance is the gap.",
+        science: "The 1987 Montreal Protocol — a binding treaty — successfully reduced ozone-depleting substances by 99% and remains the only international environmental treaty considered fully successful.",
         effects: { co2Delta: -9, tempDelta: -0.09, seaDelta: -0.5, iceDelta: 0.18, bioDelta: 6, emisDelta: -6.0 }
       }
     ]
@@ -232,10 +349,17 @@ function MetricBar({ label, value, min, max, goodDirection, unit = "", decimals 
   );
 }
 
-async function generateNarrative(decision, choice, climateState) {
-  const prompt = `You are the narrator of a hyper-realistic educational climate change simulation used in universities and policy institutes. Your tone is that of a grave, precise documentary journalist — like a cross between David Attenborough narrating a nature crisis and a senior IPCC lead author. No melodrama. No moralizing. Just honest, evidence-grounded consequence.
+async function generateNarrative(decision, choice, climateState, history) {
+  const historyStr = history.length > 0
+    ? history.map((h, i) => `Decision ${i + 1} (${h.range}): Chose "${h.choiceLabel}"`).join("\n")
+    : "This is the first decision.";
 
-The player (a UN Climate Coordinator) just made this decision:
+  const prompt = `You are the narrator of a hyper-realistic educational climate change simulation used in universities and policy institutes. Your tone is that of a grave, precise documentary journalist. No melodrama. No moralizing. Just honest, evidence-grounded consequence.
+
+The player is a UN Climate Coordinator. Here is their COMPLETE decision history so far:
+${historyStr}
+
+They just made this new decision:
 Decision era: "${decision.range}"
 Decision: "${decision.title}"
 Choice made: "${choice.label}" — ${choice.detail}
@@ -248,11 +372,11 @@ Current projected climate state after this decision (${climateState.year}):
 - Biodiversity index: ${climateState.biodiversity.toFixed(0)}/100
 
 Write exactly 3 paragraphs (160–190 words total):
-Paragraph 1: The immediate real-world policy and physical consequences of this decision — specific, grounded, referencing actual climate mechanisms (e.g. ice-albedo feedback, ocean acidification, carbon budget math).
-Paragraph 2: A single vivid human-scale scene from somewhere on Earth, 10 years after this decision. One person, one place, one moment. No names. Show what has changed in daily life — for better or worse.
-Paragraph 3: An honest scientific assessment. What do the models now show? Are we on track for 1.5°C, 2°C, 3°C or worse? What tipping points are still at risk? What does this decision mean in the context of remaining carbon budgets?
+Paragraph 1: The immediate real-world consequences of this decision — grounded in actual climate science. Where relevant, reference how this decision interacts with or builds on the player's PREVIOUS choices. If they chose well before, acknowledge the foundation. If they made poor choices earlier, show the compounding consequences.
+Paragraph 2: A vivid human-scale scene from somewhere on Earth, 10 years after this decision. Show what daily life looks like — for better or worse — as a direct result of the cumulative path taken.
+Paragraph 3: An honest scientific assessment of the cumulative trajectory. What do models now show given ALL decisions made so far? Are we on track for 1.5°C, 2°C, 3°C or worse? What does the full arc of choices mean?
 
-Do not use bullet points. Do not moralize. Do not say "it's not too late." Be scientifically accurate and emotionally honest.`;
+Be scientifically accurate. Reference the actual decision history when relevant. Do not use bullet points. Do not say "it's not too late."`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -281,30 +405,30 @@ export default function ClimateGame() {
   const [narrative, setNarrative] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [history, setHistory] = useState([]);
-  const [snapshots, setSnapshots] = useState([]); // state before each decision
+  const [snapshots, setSnapshots] = useState([]);
   const [hoveredChoice, setHoveredChoice] = useState(null);
   const [showScience, setShowScience] = useState(null);
-  const [rewindConfirm, setRewindConfirm] = useState(null); // index to confirm rewind to
+  const [rewindConfirm, setRewindConfirm] = useState(null);
   const narrativeRef = useRef(null);
 
   const currentDecision = DECISIONS[decisionIndex];
+  const dynamicContext = buildContext(decisionIndex, history, climate);
+  const unlockedChoices = getUnlockedChoices(currentDecision.id, history);
+  const allChoices = [...currentDecision.choices, ...unlockedChoices];
 
-  const applyEffects = useCallback((state, effects) => {
-    return {
-      ...state,
-      year: state.year + 10,
-      co2: Math.max(300, state.co2 + (effects.co2Delta || 0) + 2.8),
-      tempAnomaly: Math.max(1.1, state.tempAnomaly + (effects.tempDelta || 0) + 0.018),
-      seaLevel: state.seaLevel + Math.max(0.5, (effects.seaDelta || 0) + 2.0),
-      arcticIce: Math.max(0.1, Math.min(5.5, state.arcticIce + (effects.iceDelta || 0) - 0.12)),
-      biodiversity: Math.max(15, Math.min(100, state.biodiversity + (effects.bioDelta || 0) - 1.8)),
-      globalEmissions: Math.max(4, state.globalEmissions + (effects.emisDelta || 0)),
-    };
-  }, []);
+  const applyEffects = useCallback((state, effects) => ({
+    ...state,
+    year: state.year + 10,
+    co2: Math.max(300, state.co2 + (effects.co2Delta || 0) + 2.8),
+    tempAnomaly: Math.max(1.1, state.tempAnomaly + (effects.tempDelta || 0) + 0.018),
+    seaLevel: state.seaLevel + Math.max(0.5, (effects.seaDelta || 0) + 2.0),
+    arcticIce: Math.max(0.1, Math.min(5.5, state.arcticIce + (effects.iceDelta || 0) - 0.12)),
+    biodiversity: Math.max(15, Math.min(100, state.biodiversity + (effects.bioDelta || 0) - 1.8)),
+    globalEmissions: Math.max(4, state.globalEmissions + (effects.emisDelta || 0)),
+  }), []);
 
   const handleChoiceSelect = async (choice) => {
     if (phase === "narrative") return;
-    // Snapshot state BEFORE applying this decision
     setSnapshots(snaps => {
       const next = [...snaps];
       next[decisionIndex] = { climate: { ...climate }, history: [...history] };
@@ -314,14 +438,20 @@ export default function ClimateGame() {
     setIsLoading(true);
     setPhase("narrative");
     const newClimate = applyEffects(climate, choice.effects);
+    const newHistory = [...history, {
+      choiceId: choice.id,
+      choiceLabel: choice.label,
+      range: currentDecision.range,
+      decision: currentDecision.title,
+    }];
     try {
-      const text = await generateNarrative(currentDecision, choice, newClimate);
+      const text = await generateNarrative(currentDecision, choice, newClimate, history);
       setNarrative(text);
     } catch {
       setNarrative("The data arrives over the following months. Climate models are updated. Governments adjust projections. The consequences, as always, are felt unevenly across the planet.");
     }
     setClimate(newClimate);
-    setHistory(h => [...h, { decision: currentDecision.title, choice: choice.label, range: currentDecision.range }]);
+    setHistory(newHistory);
     setIsLoading(false);
     setTimeout(() => narrativeRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
   };
@@ -355,15 +485,9 @@ export default function ClimateGame() {
   };
 
   const handleRestart = () => {
-    setPhase("intro");
-    setDecisionIndex(0);
-    setClimate({ ...BASELINE });
-    setHistory([]);
-    setSnapshots([]);
-    setSelectedChoice(null);
-    setNarrative("");
-    setShowScience(null);
-    setRewindConfirm(null);
+    setPhase("intro"); setDecisionIndex(0); setClimate({ ...BASELINE });
+    setHistory([]); setSnapshots([]); setSelectedChoice(null);
+    setNarrative(""); setShowScience(null); setRewindConfirm(null);
     window.scrollTo({ top: 0 });
   };
 
@@ -377,7 +501,7 @@ export default function ClimateGame() {
     sub: { fontStyle: "italic", color: "#6a6050", fontSize: 13, marginTop: 7 },
     panel: { background: "#13130d", border: "1px solid #252518", borderRadius: 6 },
     dashWrap: { padding: "18px 22px", marginBottom: 22 },
-    dashTop: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 16 },
+    dashTop: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14 },
     dashLabel: { fontSize: 10, letterSpacing: "0.25em", textTransform: "uppercase", color: "#c8821a" },
     yearNum: { fontFamily: "'Playfair Display', serif", fontSize: 24, color: "#f4efe4" },
     metricsGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 32px" },
@@ -387,26 +511,22 @@ export default function ClimateGame() {
     ctx: { color: "#c4b898", fontSize: 14, lineHeight: 1.8, marginBottom: 16 },
     q: { color: "#e8d8b8", fontSize: 14, fontStyle: "italic", borderLeft: "3px solid #c8821a", paddingLeft: 14 },
     choicesWrap: { marginTop: 22, display: "grid", gap: 10 },
-    choice: (hov, sel) => ({
-      background: sel ? "#192219" : hov ? "#191910" : "#13130d",
-      border: `1px solid ${sel ? "#4a9e4a" : hov ? "#c8821a44" : "#252518"}`,
-      borderRadius: 5,
-      padding: "15px 17px",
-      cursor: "pointer",
-      textAlign: "left",
-      color: "#f4efe4",
-      transition: "border 0.15s, background 0.15s",
-      width: "100%",
+    choice: (hov, sel, unlocked) => ({
+      background: unlocked ? "#0e1a0e" : sel ? "#192219" : hov ? "#191910" : "#13130d",
+      border: `1px solid ${unlocked ? "#4a9e4a88" : sel ? "#4a9e4a" : hov ? "#c8821a44" : "#252518"}`,
+      borderRadius: 5, padding: "15px 17px", cursor: "pointer", textAlign: "left",
+      color: "#f4efe4", transition: "border 0.15s, background 0.15s", width: "100%",
     }),
     cLabel: { fontFamily: "'Playfair Display', serif", fontSize: 14, fontWeight: 700, marginBottom: 4, color: "#f4efe4", display: "block" },
     cDetail: { fontSize: 13, color: "#a09070", lineHeight: 1.65, display: "block" },
-    sciBtn: { fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "#c8821a", marginTop: 8, cursor: "pointer", borderBottom: "1px dotted #c8821a55", display: "inline-block", background: "none", border: "none", borderBottom: "1px dotted #c8821a", padding: 0, fontFamily: "inherit" },
+    sciBtn: { fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "#c8821a", marginTop: 8, cursor: "pointer", background: "none", border: "none", borderBottom: "1px dotted #c8821a", padding: 0, fontFamily: "inherit" },
     sciBox: { background: "#0e170e", border: "1px solid #1e3a1e", borderRadius: 4, padding: "12px 15px", marginTop: 10, fontSize: 13, color: "#7ab87a", lineHeight: 1.7 },
+    unlockedBadge: { fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "#4a9e4a", marginBottom: 6, display: "block" },
     narPanel: { padding: "26px 28px 22px", marginTop: 22 },
     narEye: { fontSize: 10, letterSpacing: "0.22em", textTransform: "uppercase", color: "#c8821a", marginBottom: 14 },
     narText: { color: "#d4c9a8", fontSize: 14.5, lineHeight: 1.88, whiteSpace: "pre-wrap" },
-    btn: { marginTop: 22, background: "#c8821a", color: "#0e0e0a", border: "none", borderRadius: 4, padding: "12px 26px", fontFamily: "'Playfair Display', serif", fontSize: 14, cursor: "pointer", fontWeight: 700, letterSpacing: "0.03em" },
-    btnGhost: { marginTop: 22, background: "transparent", color: "#7ab87a", border: "1px solid #2a4a2a", borderRadius: 4, padding: "12px 26px", fontFamily: "'Playfair Display', serif", fontSize: 14, cursor: "pointer", fontWeight: 700 },
+    btn: { marginTop: 22, background: "#c8821a", color: "#0e0e0a", border: "none", borderRadius: 4, padding: "12px 26px", fontFamily: "'Playfair Display', serif", fontSize: 14, cursor: "pointer", fontWeight: 700 },
+    btnGhost: { background: "transparent", color: "#7ab87a", border: "1px solid #2a4a2a", borderRadius: 4, padding: "12px 26px", fontFamily: "'Playfair Display', serif", fontSize: 14, cursor: "pointer", fontWeight: 700 },
     hist: { marginTop: 20, padding: "14px 18px", background: "#0e0e09", border: "1px solid #1a1a12", borderRadius: 5 },
     histEye: { fontSize: 10, letterSpacing: "0.2em", textTransform: "uppercase", color: "#5a5040", marginBottom: 10 },
     histItem: { fontSize: 12, color: "#6a6050", paddingLeft: 12, borderLeft: "2px solid #1e1e12", marginBottom: 5, lineHeight: 1.55 },
@@ -418,7 +538,6 @@ export default function ClimateGame() {
   return (
     <div style={{ background: "#0e0e0a", minHeight: "100vh", color: "#f4efe4", fontFamily: "'Source Serif 4', serif" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;1,8..60,300&display=swap'); * { box-sizing: border-box; margin: 0; padding: 0; } button { font-family: inherit; }`}</style>
-
       <div style={s.shell}>
         <div style={s.header}>
           <button onClick={() => navigate("/")} style={{ background: "none", border: "none", color: "#6a6050", fontSize: 12, cursor: "pointer", marginBottom: 12, display: "block", margin: "0 auto 12px", fontFamily: "inherit", letterSpacing: "0.05em" }}>← All Games</button>
@@ -427,12 +546,11 @@ export default function ClimateGame() {
           <p style={s.sub}>Five decisions. Fifty years. One planet. Grounded in IPCC AR6 science.</p>
         </div>
 
-        {/* INTRO */}
         {phase === "intro" && (
           <>
             <div style={s.intro}>
               <p style={{ ...s.ctx, marginBottom: 16 }}>You are humanity's newly appointed UN Climate Coordinator. Over five turns — each representing a decade from 2026 to 2076 — you will face the defining decisions of the climate crisis.</p>
-              <p style={{ ...s.ctx, marginBottom: 16 }}>Every decision is grounded in real science: the IPCC Sixth Assessment Report, IEA Net Zero pathway, UNEP Emissions Gap Reports, and peer-reviewed research. The consequences are modeled on what the science actually says will happen. The climate metrics evolve in real time.</p>
+              <p style={{ ...s.ctx, marginBottom: 16 }}>Every decision is grounded in real science: the IPCC Sixth Assessment Report, IEA Net Zero pathway, UNEP Emissions Gap Reports, and peer-reviewed research. Your choices compound — earlier decisions shape the context of later ones, unlock new options, and are woven into every AI-generated narrative.</p>
               <p style={{ fontSize: 13, color: "#6a6050", fontStyle: "italic", lineHeight: 1.7 }}>There are no easy answers. There are only trade-offs, time horizons, and the weight of billions of lives.</p>
             </div>
             <div style={{ textAlign: "center" }}>
@@ -441,7 +559,6 @@ export default function ClimateGame() {
           </>
         )}
 
-        {/* DASHBOARD */}
         {phase !== "intro" && (
           <div style={{ ...s.panel, ...s.dashWrap }}>
             <div style={s.dashTop}>
@@ -459,30 +576,32 @@ export default function ClimateGame() {
           </div>
         )}
 
-        {/* DECISION + NARRATIVE */}
         {(phase === "decision" || phase === "narrative") && (
           <>
             <div style={{ ...s.panel, ...s.decPanel }}>
               <div style={s.decEye}>Decision {decisionIndex + 1} of {DECISIONS.length} · {currentDecision.range}</div>
               <h2 style={s.decTitle}>{currentDecision.title}</h2>
-              <p style={s.ctx}>{currentDecision.context}</p>
+              <p style={s.ctx}>{dynamicContext}</p>
+              {unlockedChoices.length > 0 && (
+                <div style={{ background: "#0a180a", border: "1px solid #2a4a2a", borderRadius: 4, padding: "8px 13px", marginBottom: 14 }}>
+                  <span style={{ fontSize: 11, color: "#4a9e4a", letterSpacing: "0.1em", textTransform: "uppercase" }}>⚡ Your earlier decisions have unlocked a new option below</span>
+                </div>
+              )}
               <p style={s.q}>{currentDecision.question}</p>
               <div style={s.choicesWrap}>
-                {currentDecision.choices.map(choice => (
+                {allChoices.map(choice => (
                   <div key={choice.id}>
                     <button
-                      style={s.choice(hoveredChoice === choice.id, selectedChoice?.id === choice.id)}
+                      style={s.choice(hoveredChoice === choice.id, selectedChoice?.id === choice.id, choice.unlocked)}
                       onMouseEnter={() => setHoveredChoice(choice.id)}
                       onMouseLeave={() => setHoveredChoice(null)}
                       onClick={() => handleChoiceSelect(choice)}
                       disabled={phase === "narrative"}
                     >
+                      {choice.unlocked && <span style={s.unlockedBadge}>⚡ Unlocked by your previous decisions</span>}
                       <span style={s.cLabel}>{choice.label}</span>
                       <span style={s.cDetail}>{choice.detail}</span>
-                      <button
-                        style={s.sciBtn}
-                        onClick={e => { e.stopPropagation(); setShowScience(showScience === choice.id ? null : choice.id); }}
-                      >
+                      <button style={s.sciBtn} onClick={e => { e.stopPropagation(); setShowScience(showScience === choice.id ? null : choice.id); }}>
                         {showScience === choice.id ? "▲ hide the science" : "▼ the science"}
                       </button>
                       {showScience === choice.id && <div style={s.sciBox}>{choice.science}</div>}
@@ -498,7 +617,7 @@ export default function ClimateGame() {
                   {isLoading ? "Modeling decade-scale consequences..." : `Consequence · ${selectedChoice?.label}`}
                 </div>
                 {isLoading
-                  ? <p style={{ color: "#5a5040", fontSize: 14, fontStyle: "italic" }}>Running climate projections based on IPCC scenarios...</p>
+                  ? <p style={{ color: "#5a5040", fontSize: 14, fontStyle: "italic" }}>Running climate projections based on your full decision history...</p>
                   : <>
                     <div style={s.narText}>{narrative}</div>
                     <button onClick={handleNext} style={s.btn}>
@@ -511,7 +630,6 @@ export default function ClimateGame() {
           </>
         )}
 
-        {/* HISTORY + REWIND */}
         {history.length > 0 && phase !== "result" && (
           <div style={s.hist}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -525,18 +643,8 @@ export default function ClimateGame() {
                       Rewind to <strong>{h.range}</strong> and choose differently? Everything after this point will be erased.
                     </p>
                     <div style={{ display: "flex", gap: 8 }}>
-                      <button
-                        onClick={() => handleRewindTo(i)}
-                        style={{ background: "#c8821a", color: "#0e0e0a", border: "none", borderRadius: 3, padding: "5px 14px", fontSize: 12, cursor: "pointer", fontFamily: "'Playfair Display', serif", fontWeight: 700 }}
-                      >
-                        ↩ Rewind here
-                      </button>
-                      <button
-                        onClick={() => setRewindConfirm(null)}
-                        style={{ background: "transparent", color: "#6a6050", border: "1px solid #252518", borderRadius: 3, padding: "5px 12px", fontSize: 12, cursor: "pointer" }}
-                      >
-                        Cancel
-                      </button>
+                      <button onClick={() => handleRewindTo(i)} style={{ background: "#c8821a", color: "#0e0e0a", border: "none", borderRadius: 3, padding: "5px 14px", fontSize: 12, cursor: "pointer", fontFamily: "'Playfair Display', serif", fontWeight: 700 }}>↩ Rewind here</button>
+                      <button onClick={() => setRewindConfirm(null)} style={{ background: "transparent", color: "#6a6050", border: "1px solid #252518", borderRadius: 3, padding: "5px 12px", fontSize: 12, cursor: "pointer" }}>Cancel</button>
                     </div>
                   </div>
                 ) : (
@@ -546,10 +654,8 @@ export default function ClimateGame() {
                     onMouseLeave={e => e.currentTarget.style.borderLeftColor = "#c8821a44"}
                     onClick={() => setRewindConfirm(i)}
                   >
-                    <span>
-                      <strong style={{ color: "#8a7058" }}>{h.range} · {h.decision}:</strong> {h.choice}
-                    </span>
-                    <span style={{ fontSize: 10, color: "#5a5040", letterSpacing: "0.08em", flexShrink: 0, marginLeft: 10 }}>↩ rewind</span>
+                    <span><strong style={{ color: "#8a7058" }}>{h.range} · {h.decision}:</strong> {h.choiceLabel}</span>
+                    <span style={{ fontSize: 10, color: "#5a5040", flexShrink: 0, marginLeft: 10 }}>↩ rewind</span>
                   </div>
                 )}
               </div>
@@ -557,13 +663,11 @@ export default function ClimateGame() {
           </div>
         )}
 
-        {/* RESULT */}
         {phase === "result" && (
           <div style={s.resultWrap}>
             <div style={s.circle}>{outcome.grade}</div>
             <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: "clamp(20px,3.5vw,30px)", color: outcome.color, marginBottom: 14 }}>{outcome.title}</h2>
             <p style={{ color: "#d4c9a8", fontSize: 14, lineHeight: 1.85, maxWidth: 560, margin: "0 auto 28px" }}>{outcome.summary}</p>
-
             <div style={{ background: "#0e0e09", borderRadius: 5, padding: "18px 22px", textAlign: "left", maxWidth: 520, margin: "0 auto 24px" }}>
               <div style={{ fontSize: 10, letterSpacing: "0.2em", textTransform: "uppercase", color: "#5a5040", marginBottom: 14 }}>Final State — Year 2076</div>
               <MetricBar label="CO₂" value={climate.co2} min={350} max={580} goodDirection="low" unit=" ppm" decimals={0} />
@@ -571,21 +675,17 @@ export default function ClimateGame() {
               <MetricBar label="Sea Level Rise" value={climate.seaLevel} min={0} max={80} goodDirection="low" unit=" cm" decimals={1} />
               <MetricBar label="Biodiversity Index" value={climate.biodiversity} min={20} max={100} goodDirection="high" decimals={0} />
             </div>
-
             <div style={{ textAlign: "left", maxWidth: 520, margin: "0 auto 24px" }}>
               <div style={{ fontSize: 10, letterSpacing: "0.2em", textTransform: "uppercase", color: "#5a5040", marginBottom: 12 }}>Your Decision Record</div>
               {history.map((h, i) => (
                 <div key={i} style={{ ...s.histItem, borderLeftColor: "#c8821a44" }}>
-                  <strong style={{ color: "#c8821a" }}>{h.range}:</strong> {h.choice}
+                  <strong style={{ color: "#c8821a" }}>{h.range}:</strong> {h.choiceLabel}
                 </div>
               ))}
             </div>
-
             <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
               {history.map((h, i) => (
-                <button key={i} onClick={() => handleRewindTo(i)} style={{ ...s.btnGhost, fontSize: 12, padding: "8px 16px" }}>
-                  ↩ Rewind to {h.range}
-                </button>
+                <button key={i} onClick={() => handleRewindTo(i)} style={{ ...s.btnGhost, fontSize: 12, padding: "8px 16px" }}>↩ Rewind to {h.range}</button>
               ))}
               <button onClick={handleRestart} style={{ ...s.btnGhost, borderColor: "#5a5040", color: "#5a5040" }}>↺ Start Over</button>
             </div>
